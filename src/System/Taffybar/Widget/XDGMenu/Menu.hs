@@ -26,7 +26,7 @@ import Data.Char (toLower)
 import Data.List
 import Data.Maybe
 import qualified Data.Text as T
-import System.Taffybar.Information.XDG.DesktopEntry
+import System.Environment.XDG.DesktopEntry
 import System.Taffybar.Information.XDG.Protocol
 
 -- | Displayable menu
@@ -37,7 +37,7 @@ data Menu = Menu
   , fmSubmenus :: [Menu]
   , fmEntries :: [MenuEntry]
   , fmOnlyUnallocated :: Bool
-  } deriving (Show)
+  } deriving (Eq, Show)
 
 -- | Displayable menu entry
 data MenuEntry = MenuEntry

@@ -4,33 +4,28 @@ module System.Taffybar.Widget
   , module System.Taffybar.Widget.Battery
 
   -- * "System.Taffybar.Widget.CPUMonitor"
-  , cpuMonitorNew
+  , module System.Taffybar.Widget.CPUMonitor
 
   -- * "System.Taffybar.Widget.CommandRunner"
-  , commandRunnerNew
+  , module System.Taffybar.Widget.CommandRunner
 
   -- * "System.Taffybar.Widget.Decorators"
   , module System.Taffybar.Widget.Decorators
 
   -- * "System.Taffybar.Widget.DiskIOMonitor"
-  , dioMonitorNew
+  , module System.Taffybar.Widget.DiskIOMonitor
 
   -- * "System.Taffybar.Widget.FSMonitor"
-  , fsMonitorNew
+  , module System.Taffybar.Widget.FSMonitor
 
   -- * "System.Taffybar.Widget.FreedesktopNotifications"
-  , Notification(..)
-  , NotificationConfig(..)
-  , defaultNotificationConfig
-  , notifyAreaNew
+  , module System.Taffybar.Widget.FreedesktopNotifications
 
   -- * "System.Taffybar.Widget.Layout"
-  , LayoutConfig(..)
-  , defaultLayoutConfig
-  , layoutNew
+  , module System.Taffybar.Widget.Layout
 
   -- * "System.Taffybar.Widget.MPRIS2"
-  , mpris2New
+  , module System.Taffybar.Widget.MPRIS2
 
   -- * "System.Taffybar.Widget.NetworkGraph"
   , module System.Taffybar.Widget.NetworkGraph
@@ -39,13 +34,10 @@ module System.Taffybar.Widget
   , module System.Taffybar.Widget.SNITray
 
   -- * "System.Taffybar.Widget.SimpleClock"
-  , textClockNew
-  , textClockNewWith
-  , defaultClockConfig
-  , ClockConfig(..)
+  , module System.Taffybar.Widget.SimpleClock
 
   -- * "System.Taffybar.Widget.SimpleCommandButton"
-  , simpleCommandButtonNew
+  , module System.Taffybar.Widget.SimpleCommandButton
 
   -- * "System.Taffybar.Widget.Text.CPUMonitor"
   , module System.Taffybar.Widget.Text.CPUMonitor
@@ -57,19 +49,10 @@ module System.Taffybar.Widget
   , module System.Taffybar.Widget.Text.NetworkMonitor
 
   -- * "System.Taffybar.Widget.Weather"
-  , WeatherConfig(..)
-  , WeatherInfo(..)
-  , WeatherFormatter(WeatherFormatter)
-  , weatherNew
-  , weatherCustomNew
-  , defaultWeatherConfig
+  , module System.Taffybar.Widget.Weather
 
   -- * "System.Taffybar.Widget.Windows"
-  , windowsNew
-  , WindowsConfig(..)
-  , defaultWindowsConfig
-  , truncatedGetActiveLabel
-  , truncatedGetMenuLabel
+  , module System.Taffybar.Widget.Windows
 
   -- * "System.Taffybar.Widget.Workspaces"
   , module System.Taffybar.Widget.Workspaces

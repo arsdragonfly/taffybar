@@ -1,10 +1,11 @@
+{-# LANGUAGE TypeApplications #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      : System.Taffybar.Widget.Util
--- Copyright   : (c) José A. Romero L.
+-- Copyright   : (c) Ivan Malison
 -- License     : BSD3-style (see LICENSE)
 --
--- Maintainer  : José A. Romero L. <escherdragon@gmail.com>
+-- Maintainer  : Ivan Malison <IvanMalison@gmail.com>
 -- Stability   : unstable
 -- Portability : unportable
 --
@@ -20,12 +21,13 @@ import           Control.Monad.IO.Class
 import           Data.Functor ( ($>) )
 import           Data.Int
 import qualified Data.Text as T
+import qualified GI.Gdk as D
 import qualified GI.GdkPixbuf.Objects.Pixbuf as GI
 import qualified GI.GdkPixbuf.Objects.Pixbuf as PB
 import           GI.Gtk as Gtk
-import qualified GI.Gdk as D
+import           StatusNotifier.Tray (scalePixbufToSize)
 import           System.FilePath.Posix
-import           System.Taffybar.Information.XDG.DesktopEntry
+import           System.Environment.XDG.DesktopEntry
 import           System.Taffybar.Util
 import           Text.Printf
 
@@ -64,7 +66,7 @@ attachPopup widget title window = do
   where
     getWindow :: IO (Maybe Window)
     getWindow = do
-          windowGType <- gobjectType (undefined :: Window)
+          windowGType <- gobjectType @Window
           Just ancestor <- Gtk.widgetGetAncestor widget windowGType
           castTo Window ancestor
 
@@ -122,10 +124,17 @@ themeLoadFlags =
   ]
 
 getImageForDesktopEntry :: Int32 -> DesktopEntry -> IO (Maybe GI.Pixbuf)
-getImageForDesktopEntry size entry = fmap join $ traverse run $ deIcon entry
-  where run iconName =
-          maybeTCombine (loadPixbufByName size $ T.pack iconName)
-                        (getPixbufFromFilePath iconName)
+getImageForDesktopEntry size de = getImageForMaybeIconName (T.pack <$> deIcon de) size
+
+getImageForMaybeIconName :: Maybe T.Text -> Int32 -> IO (Maybe GI.Pixbuf)
+getImageForMaybeIconName mIconName size =
+  join <$> (sequenceA $ flip getImageForIconName size <$> mIconName)
+
+getImageForIconName :: T.Text -> Int32 -> IO (Maybe GI.Pixbuf)
+getImageForIconName iconName size =
+  maybeTCombine (loadPixbufByName size $ iconName)
+                  (getPixbufFromFilePath (T.unpack iconName) >>=
+                   traverse (scalePixbufToSize size Gtk.OrientationHorizontal))
 
 loadPixbufByName :: Int32 -> T.Text -> IO (Maybe GI.Pixbuf)
 loadPixbufByName size name = do

@@ -17,7 +17,9 @@ module System.Taffybar.DBus.Toggle ( handleDBusToggles ) where
 
 import           Control.Applicative
 import qualified Control.Concurrent.MVar as MV
+import           Control.Exception
 import           Control.Monad
+import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
@@ -29,12 +31,12 @@ import           Data.Maybe
 import qualified GI.Gdk as Gdk
 import qualified GI.Gtk as Gtk
 import           Graphics.UI.GIGtkStrut
-import           Paths_taffybar ( getDataDir )
 import           Prelude
 import           System.Directory
+import           System.Environment.XDG.BaseDir
 import           System.FilePath.Posix
 import           System.Log.Logger
-import           System.Taffybar.Context hiding (logIO, logT)
+import           System.Taffybar.Context hiding (logIO)
 import           Text.Printf
 import           Text.Read ( readMaybe )
 
@@ -53,8 +55,8 @@ import           Text.Read ( readMaybe )
 logIO :: System.Log.Logger.Priority -> String -> IO ()
 logIO = logM "System.Taffybar.DBus.Toggle"
 
-logT :: MonadTrans t => System.Log.Logger.Priority -> String -> t IO ()
-logT p m = lift $ logIO p m
+logT :: MonadIO m => System.Log.Logger.Priority -> String -> m ()
+logT p = liftIO . logIO p
 
 getActiveMonitorNumber :: MaybeT IO Int
 getActiveMonitorNumber = do
@@ -88,8 +90,11 @@ taffybarTogglePath = "/taffybar/toggle"
 taffybarToggleInterface :: InterfaceName
 taffybarToggleInterface = "taffybar.toggle"
 
+taffyDir :: IO FilePath
+taffyDir = getUserDataDir "taffybar"
+
 toggleStateFile :: IO FilePath
-toggleStateFile = (</> "toggleState.hs") <$> getDataDir
+toggleStateFile = (</> "toggle_state.dat") <$> taffyDir
 
 newtype TogglesMVar = TogglesMVar (MV.MVar (M.Map Int Bool))
 
@@ -110,13 +115,17 @@ exportTogglesInterface :: TaffyIO ()
 exportTogglesInterface = do
   TogglesMVar enabledVar <- getTogglesVar
   ctx <- ask
+  lift $ taffyDir >>= createDirectoryIfMissing True
+  stateFile <- lift toggleStateFile
   let toggleTaffyOnMon fn mon = flip runReaderT ctx $ do
         lift $ MV.modifyMVar_ enabledVar $ \numToEnabled -> do
           let current = fromMaybe True $ M.lookup mon numToEnabled
               result = M.insert mon (fn current) numToEnabled
-          logIO DEBUG $ printf "Toggle state before: %s" $ show numToEnabled
-          logIO DEBUG $ printf "Toggle state after: %s" $ show result
-          flip writeFile (show result) =<< toggleStateFile
+          logIO DEBUG $ printf "Toggle state before: %s, after %s"
+                  (show numToEnabled) (show result)
+          catch (writeFile stateFile (show result)) $ \e ->
+            logIO WARNING $ printf "Unable to write to toggle state file %s, error: %s"
+                  (show stateFile) (show (e :: SomeException))
           return result
         refreshTaffyWindows
       toggleTaffy = do

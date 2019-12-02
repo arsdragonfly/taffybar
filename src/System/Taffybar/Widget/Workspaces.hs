@@ -24,8 +24,9 @@ import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
 import           Control.RateLimit
 import qualified Data.Foldable as F
+import           Data.GI.Base.ManagedPtr (unsafeCastTo)
 import           Data.Int
-import           Data.List (intersect, sortBy)
+import           Data.List (intersect, sortBy, (\\))
 import qualified Data.Map as M
 import           Data.Maybe
 import qualified Data.MultiMap as MM
@@ -79,15 +80,15 @@ data WindowData = WindowData
 data WidgetUpdate = WorkspaceUpdate Workspace | IconUpdate [X11Window]
 
 data Workspace = Workspace
-  { workspaceIdx :: WorkspaceIdx
+  { workspaceIdx :: WorkspaceId
   , workspaceName :: String
   , workspaceState :: WorkspaceState
   , windows :: [WindowData]
   } deriving (Show, Eq)
 
 data WorkspacesContext = WorkspacesContext
-  { controllersVar :: MV.MVar (M.Map WorkspaceIdx WWC)
-  , workspacesVar :: MV.MVar (M.Map WorkspaceIdx Workspace)
+  { controllersVar :: MV.MVar (M.Map WorkspaceId WWC)
+  , workspacesVar :: MV.MVar (M.Map WorkspaceId Workspace)
   , workspacesWidget :: Gtk.Box
   , workspacesConfig :: WorkspacesConfig
   , taffyContext :: Context
@@ -177,14 +178,7 @@ defaultWorkspacesConfig =
   , showWorkspaceFn = const True
   , borderWidth = 2
   , iconSort = sortWindowsByPosition
-  , updateEvents =
-      [ "WM_HINTS"
-      , "_NET_CURRENT_DESKTOP"
-      , "_NET_DESKTOP_NAMES"
-      , "_NET_NUMBER_OF_DESKTOPS"
-      , "_NET_WM_DESKTOP"
-      , "_NET_WM_STATE_HIDDEN"
-      ]
+  , updateEvents = allEWMHProperties \\ [ewmhWMIcon]
   , updateRateLimitMicroseconds = 100000
   , urgentWorkspaceState = False
   }
@@ -201,44 +195,45 @@ updateVar var modify = do
   ctx <- ask
   lift $ MV.modifyMVar var $ fmap (\a -> (a, a)) . flip runReaderT ctx . modify
 
-updateWorkspacesVar :: WorkspacesIO (M.Map WorkspaceIdx Workspace)
+updateWorkspacesVar :: WorkspacesIO (M.Map WorkspaceId Workspace)
 updateWorkspacesVar = do
   workspacesRef <- asks workspacesVar
   updateVar workspacesRef buildWorkspaceData
 
-getWorkspaceToWindows :: [X11Window] -> X11Property (MM.MultiMap WorkspaceIdx X11Window)
+getWorkspaceToWindows ::
+  [X11Window] -> X11Property (MM.MultiMap WorkspaceId X11Window)
 getWorkspaceToWindows =
   foldM
     (\theMap window ->
        MM.insert <$> getWorkspace window <*> pure window <*> pure theMap)
     MM.empty
 
-getWindowData :: [X11Window]
+getWindowData :: Maybe X11Window
               -> [X11Window]
               -> X11Window
               -> X11Property WindowData
-getWindowData activeWindows urgentWindows window = do
+getWindowData activeWindow urgentWindows window = do
   wTitle <- getWindowTitle window
   wClass <- getWindowClass window
-  wMinimized <- getWindowStateProperty window "_NET_WM_STATE_HIDDEN"
+  wMinimized <- getWindowMinimized window
   return
     WindowData
     { windowId = window
     , windowTitle = wTitle
     , windowClass = wClass
     , windowUrgent = window `elem` urgentWindows
-    , windowActive = window `elem` activeWindows
+    , windowActive = Just window == activeWindow
     , windowMinimized = wMinimized
     }
 
-buildWorkspaceData :: M.Map WorkspaceIdx Workspace
-                -> WorkspacesIO (M.Map WorkspaceIdx Workspace)
+buildWorkspaceData :: M.Map WorkspaceId Workspace
+                -> WorkspacesIO (M.Map WorkspaceId Workspace)
 buildWorkspaceData _ = ask >>= \context -> liftX11Def M.empty $ do
   names <- getWorkspaceNames
   wins <- getWindows
   workspaceToWindows <- getWorkspaceToWindows wins
   urgentWindows <- filterM isWindowUrgent wins
-  activeWindows <- readAsListOfWindow Nothing "_NET_ACTIVE_WINDOW"
+  activeWindow <- getActiveWindow
   active:visible <- getVisibleWorkspaces
   let getWorkspaceState idx ws
         | idx == active = Active
@@ -251,7 +246,7 @@ buildWorkspaceData _ = ask >>= \context -> liftX11Def M.empty $ do
   foldM
     (\theMap (idx, name) -> do
        let ws = MM.lookup idx workspaceToWindows
-       windowInfos <- mapM (getWindowData activeWindows urgentWindows) ws
+       windowInfos <- mapM (getWindowData activeWindow urgentWindows) ws
        return $
          M.insert
            idx
@@ -286,10 +281,10 @@ addWidget controller = do
      -- widgets appear out of order, in the switcher, by acting as an empty
      -- place holder when the actual widget is hidden.
     hbox <- Gtk.boxNew Gtk.OrientationHorizontal 0
-    parent <- Gtk.widgetGetParent workspaceWidget
-    if isJust parent
-      then Gtk.widgetReparent workspaceWidget hbox
-      else Gtk.containerAdd hbox workspaceWidget
+    void $ Gtk.widgetGetParent workspaceWidget >>=
+         traverse (unsafeCastTo Gtk.Box) >>=
+         traverse (flip Gtk.containerRemove workspaceWidget)
+    Gtk.containerAdd hbox workspaceWidget
     Gtk.containerAdd cont hbox
 
 workspacesNew :: WorkspacesConfig -> TaffyIO Gtk.Widget
@@ -309,13 +304,21 @@ workspacesNew cfg = ask >>= \tContext -> lift $ do
   runReaderT updateAllWorkspaceWidgets context
   updateHandler <- onWorkspaceUpdate context
   iconHandler <- onIconsChanged context
-  (workspaceSubscription, iconSubscription) <-
+  let doUpdate = lift . updateHandler
+      handleConfigureEvents e@(ConfigureEvent {}) = doUpdate e
+      handleConfigureEvents _ = return ()
+  (workspaceSubscription, iconSubscription, geometrySubscription) <-
     flip runReaderT tContext $ sequenceT
-         ( subscribeToEvents (updateEvents cfg) $ lift . updateHandler
-         , subscribeToEvents ["_NET_WM_ICON"] (lift . onIconChanged iconHandler)
+         ( subscribeToPropertyEvents (updateEvents cfg) $ doUpdate
+         , subscribeToPropertyEvents [ewmhWMIcon] (lift . onIconChanged iconHandler)
+         , subscribeToAll handleConfigureEvents
          )
   let doUnsubscribe = flip runReaderT tContext $
-        mapM_ unsubscribe [iconSubscription, workspaceSubscription]
+        mapM_ unsubscribe
+              [ iconSubscription
+              , workspaceSubscription
+              , geometrySubscription
+              ]
   _ <- Gtk.onWidgetUnrealize cont doUnsubscribe
   _ <- widgetSetClassGI cont "workspaces"
   Gtk.toWidget cont
@@ -365,7 +368,7 @@ setControllerWidgetVisibility = do
                     (M.lookup (workspaceIdx ws) controllersMap) >>=
         maybe (return ()) action
 
-doWidgetUpdate :: (WorkspaceIdx -> WWC -> WorkspacesIO WWC) -> WorkspacesIO ()
+doWidgetUpdate :: (WorkspaceId -> WWC -> WorkspacesIO WWC) -> WorkspacesIO ()
 doWidgetUpdate updateController = do
   c@WorkspacesContext { controllersVar = controllersRef } <- ask
   lift $ MV.modifyMVar_ controllersRef $ \controllers -> do
@@ -593,9 +596,8 @@ instance WorkspaceWidgetController IconController where
   updateWidget ic (IconUpdate updatedIcons) =
     updateWindowIconsById ic updatedIcons >> return ic
 
-updateWindowIconsById :: IconController
-                      -> [X11Window]
-                      -> WorkspacesIO ()
+updateWindowIconsById ::
+  IconController -> [X11Window] -> WorkspacesIO ()
 updateWindowIconsById ic windowIds =
   mapM_ maybeUpdateWindowIcon $ iconImages ic
   where
@@ -610,9 +612,8 @@ scaledWindowIconPixbufGetter getter size =
   getter size >=>
   lift . traverse (scalePixbufToSize size Gtk.OrientationHorizontal)
 
-constantScaleWindowIconPixbufGetter :: Int32
-                                    -> WindowIconPixbufGetter
-                                    -> WindowIconPixbufGetter
+constantScaleWindowIconPixbufGetter ::
+  Int32 -> WindowIconPixbufGetter -> WindowIconPixbufGetter
 constantScaleWindowIconPixbufGetter constantSize getter =
   const $ scaledWindowIconPixbufGetter getter constantSize
 
@@ -670,7 +671,9 @@ sortWindowsByPosition :: [WindowData] -> WorkspacesIO [WindowData]
 sortWindowsByPosition wins = do
   let getGeometryWorkspaces w = getDisplay >>= liftIO . (`safeGetGeometry` w)
       getGeometries = mapM
-                      (forkM return ((((sel2 &&& sel3) <$>) .) getGeometryWorkspaces) . windowId)
+                      (forkM return
+                               ((((sel2 &&& sel3) <$>) .) getGeometryWorkspaces) .
+                               windowId)
                       wins
   windowGeometries <- liftX11Def [] getGeometries
   let getLeftPos wd =
@@ -790,7 +793,7 @@ buildButtonController contentsBuilder workspace = do
         WorkspaceButtonController
         {button = ebox, buttonWorkspace = workspace, contentsController = cc}
 
-switch :: (MonadIO m) => WorkspacesContext -> WorkspaceIdx -> m Bool
+switch :: (MonadIO m) => WorkspacesContext -> WorkspaceId -> m Bool
 switch ctx idx = do
   liftIO $ flip runReaderT ctx $ liftX11Def () $ switchToWorkspace idx
   return True

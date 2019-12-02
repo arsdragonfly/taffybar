@@ -1,3 +1,22 @@
+# 3.2.2
+
+## Bug Fixes
+
+ * Solve space leaks on `updateSamples` and `getDeviceUpDown` (#472).
+ * Prevent crash when using mpris2New and librsvg is not available (#478).
+
+# 3.2.1
+
+## Bug Fixes
+
+ * The workspaces widget now listens on the additional EWMH properties that it
+   needs to in order to properly update things when the active window changes.
+   This problem likely only emerged recently because xmonad has recently become
+   much more conservative about emitting change events (#454).
+
+ * The workspaces widget listens for changes to window geometry (similar to
+   above) (#456).
+
 # 3.2.0
 
 ## New Features
@@ -8,6 +27,8 @@
    variable poll times was added.
 
  * A new widget `System.Taffybar.Widget.SimpleCommandButton` was added.
+
+ * Taffybar now outputs colorized and annotated logs by default.
 
 ## Breaking Changes
 
@@ -29,7 +50,14 @@
 
 ## Bug Fixes
 
- * Calendar pops up below bar without hiding any other widget.
+ * Calendar pops up below bar without hiding any other widget #261.
+
+ * Avoid failing when parsing XDG Desktop files with unrecognized application
+   type, which previously resulted in "Prelude.read: no parse" #447.
+
+ * Use XDG data dir so that taffybar dbus toggling functions correctly when
+   taffybar is installed in a location that is not writable by the user. This is
+   the case with nix when it is installed in the nix store #452.
 
 # 3.1.2
 

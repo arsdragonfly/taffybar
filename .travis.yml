@@ -1,14 +1,5 @@
-language: generic
-
-sudo: required
-
-services:
-  - docker
-
-matrix:
-  include:
-  # - env: STACK_YAML=stack-8.0.yaml
-  - env: STACK_YAML=stack-8.2.yaml
-
+language: nix
 script:
-- docker build --build-arg STACK_YAML="$STACK_YAML" .
+- nix-env -iA cachix -f https://cachix.org/api/v1/install
+- cachix use taffy
+- nix-build -j2

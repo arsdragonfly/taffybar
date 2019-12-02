@@ -18,15 +18,17 @@
 module System.Taffybar.Information.XDG.Protocol
   ( XDGMenu(..)
   , DesktopEntryCondition(..)
-  , readXDGMenu
-  , matchesCondition
-  , getXDGDesktop
-  , getDirectoryDirs
   , getApplicationEntries
+  , getDirectoryDirs
   , getPreferredLanguages
+  , getXDGDesktop
+  , getXDGMenuFilenames
+  , matchesCondition
+  , readXDGMenu
   ) where
 
 import           Control.Applicative
+import           Control.Monad
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
 import           Data.Char (toLower)
@@ -38,30 +40,13 @@ import           Prelude
 import           Safe (headMay)
 import           System.Directory
 import           System.Environment
+import           System.Environment.XDG.DesktopEntry
 import           System.FilePath.Posix
-import           System.Taffybar.Information.XDG.DesktopEntry
+import           System.Log.Logger
+import           System.Posix.Files
 import           System.Taffybar.Util
 import           Text.XML.Light
 import           Text.XML.Light.Helpers
-
--- Environment Variables
-
--- | Produce a list of config locations to search, starting with
--- XDG_CONFIG_HOME (or $HOME/.config) and XDG_CONFIG_DIRS, with
--- fallback to /etc/xdg
-getXDGConfigDirs :: IO [String]
-getXDGConfigDirs = do
-  mXdgConfigHome <- fromMaybe "" <$>
-                    lookupEnv "XDG_CONFIG_HOME"
-  xdgConfigHome <- if null mXdgConfigHome 
-                   then getDefaultConfigHome
-                   else return mXdgConfigHome
-  xdgConfigDirs <- maybe [] splitSearchPath <$>
-                   lookupEnv "XDG_CONFIG_DIRS"
-  let xdgDirs = if null xdgConfigDirs
-                then ["/etc/xdg/"]
-                else xdgConfigDirs
-  existingDirs $ map normalise $ xdgConfigHome : xdgDirs
 
 getXDGMenuPrefix :: IO (Maybe String)
 getXDGMenuPrefix = lookupEnv "XDG_MENU_PREFIX"
@@ -73,7 +58,9 @@ getXDGMenuFilenames
                   -- 'Just "mate-"').
   -> IO [FilePath]
 getXDGMenuFilenames mMenuPrefix = do
-  configDirs <- getXDGConfigDirs
+  configDirs <-
+    liftA2 (:) (getXdgDirectory XdgConfig "")
+             (getXdgDirectoryList XdgConfigDirs)
   maybePrefix <- (mMenuPrefix <|>) <$> getXDGMenuPrefix
   let maybeAddDash t = if last t == '-' then t else t ++ "-"
       dashedPrefix = maybe "" maybeAddDash maybePrefix
@@ -236,7 +223,7 @@ getXDGDesktop = do
 getDirectoryDirs :: IO [FilePath]
 getDirectoryDirs = do
   dataDirs <- getXDGDataDirs
-  existingDirs $ map (</> "desktop-directories") dataDirs
+  filterM (fileExist . (</> "desktop-directories")) dataDirs
 
 -- | Fetch menus and desktop entries and assemble the XDG menu.
 readXDGMenu :: Maybe String -> IO (Maybe (XDGMenu, [DesktopEntry]))
@@ -250,13 +237,13 @@ maybeMenu :: FilePath -> IO (Maybe (XDGMenu, [DesktopEntry]))
 maybeMenu filename =
   ifM (doesFileExist filename)
       (do
-        putStrLn $ "Reading " ++ filename
         contents <- readFile filename
         langs <- getPreferredLanguages
         runMaybeT $ do
           m <- MaybeT $ return $ parseXMLDoc contents >>= parseMenu
           des <- lift $ getApplicationEntries langs m
           return (m, des))
-      (do
-        putStrLn $ "Error: menu file '" ++ filename ++ "' does not exist!"
-        return Nothing)
+       (do
+         logM "System.Taffybar.Information.XDG.Protocol" WARNING $
+                "Menu file '" ++ filename ++ "' does not exist!"
+         return Nothing)

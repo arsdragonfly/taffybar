@@ -28,6 +28,7 @@ import           Control.Monad.Trans.Maybe
 import           Control.Monad.Trans.Reader
 import qualified DBus.Client as DBus
 import           Data.Data
+import           Data.GI.Base.ManagedPtr (unsafeCastTo)
 import           Data.Int
 import           Data.List
 import qualified Data.Map as M
@@ -36,6 +37,7 @@ import           Data.Tuple.Sequence
 import           Data.Unique
 import qualified GI.Gdk
 import qualified GI.GdkX11 as GdkX11
+import           GI.GdkX11.Objects.X11Window
 import qualified GI.Gtk as Gtk
 import           Graphics.UI.GIGtkStrut
 import           StatusNotifier.TransparentWindow
@@ -50,8 +52,8 @@ import           Unsafe.Coerce
 logIO :: System.Log.Logger.Priority -> String -> IO ()
 logIO = logM "System.Taffybar.Context"
 
-logT :: MonadTrans t => System.Log.Logger.Priority -> String -> t IO ()
-logT p m = lift $ logIO p m
+logC :: MonadIO m => System.Log.Logger.Priority -> String -> m ()
+logC p = liftIO . logIO p
 
 type Taffy m v = MonadIO m => ReaderT Context m v
 type TaffyIO v = ReaderT Context IO v
@@ -101,17 +103,38 @@ defaultTaffybarConfig = TaffybarConfig
   , errorMsg = Nothing
   }
 
+-- | A "Context" value holds all of the state associated with a single running
+-- instance of taffybar. It is typically accessed from a widget constructor
+-- through the "TaffyIO" monad transformer stack.
 data Context = Context
-  { x11ContextVar :: MV.MVar X11Context
+  {
+  -- | The X11Context that will be used to service X11Property requests.
+    x11ContextVar :: MV.MVar X11Context
+  -- | The handlers which will be evaluated against incoming X11 events.
   , listeners :: MV.MVar SubscriptionList
+  -- | A collection of miscellaneous peices of state which are keyed by their
+  -- types. Most new peices of state should go here, rather than in a new field
+  -- in "Context". State stored here is typically accessed through
+  -- "getStateDefault".
   , contextState :: MV.MVar (M.Map TypeRep Value)
+  -- | Used to track the windows that taffybar is currently controlling, and
+  -- which "BarConfig" objects they are associated with.
   , existingWindows :: MV.MVar [(BarConfig, Gtk.Window)]
+  -- | The shared user session "DBus.Client".
   , sessionDBusClient :: DBus.Client
+  -- | The shared system session "DBus.Client".
   , systemDBusClient :: DBus.Client
+  -- | The action that will be evaluated to get the bar configs associated with
+  -- each active monitor taffybar should run on.
   , getBarConfigs :: BarConfigGetter
+  -- | Populated with the BarConfig that resulted in the creation of a given
+  -- widget, when its constructor is called. This lets widgets access thing like
+  -- who their neighbors are. Note that the value of "contextBarConfig" is
+  -- different for widgets belonging to bar windows on differnt monitors.
   , contextBarConfig :: Maybe BarConfig
   }
 
+-- | Build the "Context" for a taffybar process.
 buildContext :: TaffybarConfig -> IO Context
 buildContext TaffybarConfig
                { dbusClientParam = maybeDBus
@@ -145,19 +168,17 @@ buildContext TaffybarConfig
                -- whatever it pleases.
                (runReaderT forceRefreshTaffyWindows context))
   flip runReaderT context $ do
-    logT DEBUG "Starting X11 Handler"
+    logC DEBUG "Starting X11 Handler"
     startX11EventHandler
-    logT DEBUG "Running startup hook"
+    logC DEBUG "Running startup hook"
     startup
-    logT DEBUG "Queing build windows command"
+    logC DEBUG "Queing build windows command"
     refreshTaffyWindows
   logIO DEBUG "Context build finished"
   return context
 
 buildEmptyContext :: IO Context
 buildEmptyContext = buildContext defaultTaffybarConfig
-
-instance GdkX11.IsX11Window GI.Gdk.Window
 
 buildBarWindow :: Context -> BarConfig -> IO Gtk.Window
 buildBarWindow context barConfig = do
@@ -199,14 +220,18 @@ buildBarWindow context barConfig = do
 
   runX11Context context () $ void $ runMaybeT $ do
     gdkWindow <- MaybeT $ Gtk.widgetGetWindow window
-    xid <- GdkX11.x11WindowGetXid gdkWindow
+    xid <- GdkX11.x11WindowGetXid =<< liftIO (unsafeCastTo X11Window gdkWindow)
+    logC DEBUG $ printf "Lowering X11 window %s" $ show xid
     lift $ doLowerWindow (fromIntegral xid)
 
   return window
 
+-- | Use the "barConfigGetter" field of "Context" to get the set of taffybar
+-- windows that should active. Will avoid recreating windows if there is already
+-- a window with the appropriate geometry and "BarConfig".
 refreshTaffyWindows :: TaffyIO ()
 refreshTaffyWindows = liftReader postGUIASync $ do
-  logT DEBUG "Refreshing windows"
+  logC DEBUG "Refreshing windows"
   ctx <- ask
   windowsVar <- asks existingWindows
 
@@ -247,7 +272,7 @@ refreshTaffyWindows = liftReader postGUIASync $ do
           return $ newWindowPairs ++ remainingWindows
 
   lift $ MV.modifyMVar_ windowsVar rebuildWindows
-  logT DEBUG "Finished refreshing windows"
+  logC DEBUG "Finished refreshing windows"
   return ()
 
 forceRefreshTaffyWindows :: TaffyIO ()
@@ -302,22 +327,28 @@ putState getValue = do
          (return . (contextStateMap,))
          (currentValue >>= fromValue)
 
+-- | A version of "forkIO" in "TaffyIO".
 taffyFork :: ReaderT r IO () -> ReaderT r IO ()
 taffyFork = void . liftReader forkIO
 
 startX11EventHandler :: Taffy IO ()
 startX11EventHandler = taffyFork $ do
   c <- ask
-  -- The event loop needs its own X11Context to separately handle communications
-  -- from the X server.
+  -- XXX: The event loop needs its own X11Context to separately handle
+  -- communications from the X server. We deliberately avoid using the context
+  -- from x11ContextVar here.
   lift $ withDefaultCtx $ eventLoop
          (\e -> runReaderT (handleX11Event e) c)
 
+-- | Remove the listener associated with the provided "Unique" from the
+-- collection of listeners.
 unsubscribe :: Unique -> Taffy IO ()
 unsubscribe identifier = do
   listenersVar <- asks listeners
   lift $ MV.modifyMVar_ listenersVar $ return . filter ((== identifier) . fst)
 
+-- | Subscribe to all incoming events on the X11 event loop. The returned
+-- "Unique" value can be used to unregister the listener using "unsuscribe".
 subscribeToAll :: Listener -> Taffy IO Unique
 subscribeToAll listener = do
   identifier <- lift newUnique
@@ -330,8 +361,10 @@ subscribeToAll listener = do
   lift $ MV.modifyMVar_ listenersVar (return . addListener)
   return identifier
 
-subscribeToEvents :: [String] -> Listener -> Taffy IO Unique
-subscribeToEvents eventNames listener = do
+-- | Subscribe to X11 "PropertyEvent"s where the property changed is in the
+-- provided list.
+subscribeToPropertyEvents :: [String] -> Listener -> Taffy IO Unique
+subscribeToPropertyEvents eventNames listener = do
   eventAtoms <- mapM (runX11 . getAtom) eventNames
   let filteredListener event@PropertyEvent { ev_atom = atom } =
         when (atom `elem` eventAtoms) $

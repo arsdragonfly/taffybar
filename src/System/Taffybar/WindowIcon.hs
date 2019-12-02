@@ -26,7 +26,7 @@ import           System.Taffybar.Hooks
 import           System.Taffybar.Information.Chrome
 import           System.Taffybar.Information.EWMHDesktopInfo
 import           System.Taffybar.Information.X11DesktopInfo
-import           System.Taffybar.Information.XDG.DesktopEntry
+import           System.Environment.XDG.DesktopEntry
 import           System.Taffybar.Util
 import           System.Taffybar.Widget.Util
 
@@ -121,6 +121,9 @@ getWindowIconFromDesktopEntryByClasses =
   where getWindowIconFromDesktopEntryByClass size klass =
           runMaybeT $ do
             entry <- MaybeT $ getDirectoryEntryByClass klass
+            lift $ logPrintF "System.Taffybar.WindowIcon" DEBUG
+                   "Using desktop entry for icon %s"
+                   (deFilename entry, klass)
             MaybeT $ lift $ getImageForDesktopEntry size entry
 
 getWindowIconFromClasses :: Int32 -> String -> IO (Maybe Gdk.Pixbuf)
